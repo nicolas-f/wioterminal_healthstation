@@ -20,7 +20,6 @@
 TFT_eSPI tft;
 
 const char* logFilePath = "data.csv"; //log path on file system
-File logFile;
 
 #ifdef  ARDUINO_SAMD_VARIANT_COMPLIANCE
     #define SERIAL_OUTPUT SerialUSB
@@ -32,6 +31,46 @@ HM330X sensor;
 uint8_t buf[30];
 
 unsigned long start_time = 0;
+
+boolean writeFile(fs::FS& fs, const char* path, const char* message) {
+    boolean success = true;
+    SERIAL_OUTPUT.print("Writing file: ");
+    SERIAL_OUTPUT.println(path);
+    File file = fs.open(path, FILE_WRITE);
+    if (!file) {
+        SERIAL_OUTPUT.println("Failed to open file for writing");
+        return false;
+    }
+    
+    if (file.print(message)) {
+        SERIAL_OUTPUT.println("File written");
+    } else {
+        SERIAL_OUTPUT.println("Write failed");
+        success = false;
+    }
+
+    file.close();
+    return success;
+}
+
+boolean appendFile(fs::FS& fs, const char* path, const char* message) {
+    boolean success = true;
+    char buf[100];
+    sprintf(buf, "Appending \"%s\" to file: %s", message, path);
+    SERIAL_OUTPUT.println(buf);
+
+    File file = fs.open(path, FILE_APPEND);
+    if (!file) {
+        SERIAL_OUTPUT.println("Failed to open file for appending");
+        return false;
+    }
+    if (!file.print(message)) {
+        SERIAL_OUTPUT.println("Append failed");
+        success = false;
+    }
+    file.close();
+    return success;
+}
 
 const char* str[] = {"sensor num: ", "PM1.0",
                      "PM2.5",
@@ -60,34 +99,26 @@ HM330XErrorCode parse_result(uint8_t* data) {
     int start  = 0;
     // display available size
     uint32_t usedBytes = DEV.usedBytes();
-    sprintf(buf, "Used space: %d MB", usedBytes / (1024 * 1024));
+    sprintf(buf, "Used space: %ld KB", usedBytes / 1024);
     tft.drawString(buf,0,start);
     start += 30;
-    int written = sprintf(buf, "%ld", millis());
-    logFile.write(buf, written);
+    sprintf(buf, "%ld", millis());
+    appendFile(DEV, logFilePath, buf);
     for (int i = 2; i < 5; i++) {
         value = (uint16_t) data[i * 2] << 8 | data[i * 2 + 1];
         sprintf(buf, "%s: %u ug/m3", str[i - 1], value);
         tft.drawString(buf,0,start);
-        written = sprintf(buf, ",%u", value);
-        logFile.write(buf, written);
+        sprintf(buf, ",%u", value);
+        appendFile(DEV, logFilePath, buf);
         start += 30;
     }
-    logFile.write("\n");
-    logFile.flush();
+    appendFile(DEV, logFilePath, "\n");
     return NO_ERROR;
 }
 
 HM330XErrorCode parse_result_value(uint8_t* data) {
     if (NULL == data) {
         return ERROR_PARAM;
-    }
-    for (int i = 0; i < 28; i++) {
-        SERIAL_OUTPUT.print(data[i], HEX);
-        SERIAL_OUTPUT.print("  ");
-        if ((0 == (i) % 5) || (0 == i)) {
-            SERIAL_OUTPUT.println("");
-        }
     }
     uint8_t sum = 0;
     for (int i = 0; i < 28; i++) {
@@ -100,7 +131,7 @@ HM330XErrorCode parse_result_value(uint8_t* data) {
     return NO_ERROR;
 }
 
-void writeHeader() {
+void writeHeader(File& logFile) {
     logFile.write("time");
     for (int i = 2; i < 5; i++) {
       logFile.write(",");
@@ -112,6 +143,10 @@ void writeHeader() {
 
 /*30s*/
 void setup() {
+    // Init buttons
+    pinMode(WIO_KEY_A, INPUT_PULLUP);
+    pinMode(WIO_KEY_B, INPUT_PULLUP);
+    pinMode(WIO_KEY_C, INPUT_PULLUP);
     // Init screen
     tft.begin();  
     tft.setRotation(3);      
@@ -135,10 +170,12 @@ void setup() {
     Serial.println("initialization done.");
     // check if file exists
     if(!DEV.exists(logFilePath)) {
-      logFile = SD.open("data.csv", FILE_WRITE); //Writing Mode
-      writeHeader();
-    } else {
-      logFile = SD.open("data.csv", FILE_APPEND); //Writing Mode
+      File logFile = DEV.open("data.csv", FILE_WRITE); //Writing Mode
+      if (!logFile) {
+          SERIAL_OUTPUT.println("Failed to open file for writing");
+          while (1);
+      }
+      writeHeader(logFile);    
     }
 
 
@@ -155,6 +192,14 @@ void setup() {
 
 
 void loop() {
+    if (digitalRead(WIO_KEY_A) == LOW) {
+        // Turning off the LCD backlight
+        digitalWrite(LCD_BACKLIGHT, LOW);
+    }
+    if (digitalRead(WIO_KEY_B) == LOW) {
+      // Turning on the LCD backlight
+      digitalWrite(LCD_BACKLIGHT, HIGH);
+    }
     if (sensor.read_sensor_value(buf, 29)) {
         SERIAL_OUTPUT.println("HM330X read result failed!!!");
     } else {
@@ -165,7 +210,7 @@ void loop() {
         delay(5000);  
       } else {
           char buf[100];
-          sprintf(buf, "Warmup %d ..", 30 - (millis() - start_time) / 1000);
+          sprintf(buf, "Warmup %ld ..", 30 - (millis() - start_time) / 1000);
           tft.drawString(buf,0,80);
           delay(1000);      
       }
