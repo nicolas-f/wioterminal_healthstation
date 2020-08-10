@@ -31,6 +31,10 @@ HM330X sensor;
 uint8_t buf[30];
 
 unsigned long start_time = 0;
+unsigned long last_sensor_reading = 0;
+unsigned long buttonIndex[] = {WIO_KEY_A, WIO_KEY_B, WIO_KEY_C};
+int lastButtonState[] = {HIGH, HIGH, HIGH};
+int screenState = HIGH;
 
 boolean writeFile(fs::FS& fs, const char* path, const char* message) {
     boolean success = true;
@@ -96,23 +100,25 @@ HM330XErrorCode parse_result(uint8_t* data) {
     
    
     char buf[100];
+    char filebuf[100];
+    memset(filebuf, 0, sizeof(filebuf));
+    int written = 0;
     int start  = 0;
     // display available size
     uint32_t usedBytes = DEV.usedBytes();
     sprintf(buf, "Used space: %ld KB", usedBytes / 1024);
     tft.drawString(buf,0,start);
     start += 30;
-    sprintf(buf, "%ld", millis());
-    appendFile(DEV, logFilePath, buf);
+    written += sprintf(filebuf + written, "%ld", millis());
     for (int i = 2; i < 5; i++) {
         value = (uint16_t) data[i * 2] << 8 | data[i * 2 + 1];
         sprintf(buf, "%s: %u ug/m3", str[i - 1], value);
         tft.drawString(buf,0,start);
-        sprintf(buf, ",%u", value);
-        appendFile(DEV, logFilePath, buf);
+        written += sprintf(filebuf + written, ",%u", value);
         start += 30;
     }
-    appendFile(DEV, logFilePath, "\n");
+    written += sprintf(filebuf + written, "\n");
+    appendFile(DEV, logFilePath, buf);
     return NO_ERROR;
 }
 
@@ -192,27 +198,35 @@ void setup() {
 
 
 void loop() {
-    if (digitalRead(WIO_KEY_A) == LOW) {
-        // Turning off the LCD backlight
-        digitalWrite(LCD_BACKLIGHT, LOW);
+    // Use press button on the left
+    if(lastButtonState[2] == HIGH && digitalRead(buttonIndex[2]) == LOW) {
+        screenState = screenState == LOW ? HIGH : LOW;
+        if(screenState == HIGH) {
+            // Turning off the LCD backlight
+            digitalWrite(LCD_BACKLIGHT, LOW);
+            screenState = LOW;
+        } else {
+            // Turning on the LCD backlight
+            digitalWrite(LCD_BACKLIGHT, HIGH);
+            screenState = HIGH;
+        }
     }
-    if (digitalRead(WIO_KEY_B) == LOW) {
-      // Turning on the LCD backlight
-      digitalWrite(LCD_BACKLIGHT, HIGH);
+    for(int i=0; i < 3; i++) {
+        lastButtonState[i] = digitalRead(buttonIndex[i]);
     }
-    if (sensor.read_sensor_value(buf, 29)) {
-        SERIAL_OUTPUT.println("HM330X read result failed!!!");
-    } else {
-      if(millis() - start_time > 30000) {
-        parse_result_value(buf);
-        parse_result(buf);
-        SERIAL_OUTPUT.println("");
-        delay(5000);  
-      } else {
-          char buf[100];
-          sprintf(buf, "Warmup %ld ..", 30 - (millis() - start_time) / 1000);
-          tft.drawString(buf,0,80);
-          delay(1000);      
-      }
+
+    if(millis() - start_time < 30000) {
+        char buf[100];
+        sprintf(buf, "Warmup %ld ..   ", 30 - (millis() - start_time) / 1000);
+        tft.drawString(buf,0,80);
+    } else if(last_sensor_reading - millis() > 5000) {
+        if (sensor.read_sensor_value(buf, 29)) {
+            SERIAL_OUTPUT.println("HM330X read result failed!!!");
+        } else {
+            parse_result_value(buf);
+            parse_result(buf);
+        }
+        last_sensor_reading = millis();
     }
+    delay(125);
 }
