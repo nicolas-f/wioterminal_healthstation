@@ -118,7 +118,7 @@ HM330XErrorCode parse_result(uint8_t* data) {
         start += 30;
     }
     written += sprintf(filebuf + written, "\n");
-    appendFile(DEV, logFilePath, buf);
+    appendFile(DEV, logFilePath, filebuf);
     return NO_ERROR;
 }
 
@@ -200,7 +200,6 @@ void setup() {
 void loop() {
     // Use press button on the left
     if(lastButtonState[2] == HIGH && digitalRead(buttonIndex[2]) == LOW) {
-        screenState = screenState == LOW ? HIGH : LOW;
         if(screenState == HIGH) {
             // Turning off the LCD backlight
             digitalWrite(LCD_BACKLIGHT, LOW);
@@ -215,11 +214,12 @@ void loop() {
         lastButtonState[i] = digitalRead(buttonIndex[i]);
     }
 
-    if(millis() - start_time < 30000) {
+    if(millis() - start_time < 30000 && millis() - last_sensor_reading > 1000) {
         char buf[100];
         sprintf(buf, "Warmup %ld ..   ", 30 - (millis() - start_time) / 1000);
         tft.drawString(buf,0,80);
-    } else if(last_sensor_reading - millis() > 5000) {
+        last_sensor_reading = millis();
+    } else if(millis() - last_sensor_reading > 5000) {
         if (sensor.read_sensor_value(buf, 29)) {
             SERIAL_OUTPUT.println("HM330X read result failed!!!");
         } else {
