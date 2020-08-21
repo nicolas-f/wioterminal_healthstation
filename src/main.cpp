@@ -32,6 +32,7 @@ uint8_t buf[30];
 
 unsigned long start_time = 0;
 unsigned long last_sensor_reading = 0;
+unsigned long last_display = 0;
 unsigned long buttonIndex[] = {WIO_KEY_A, WIO_KEY_B, WIO_KEY_C};
 int lastButtonState[] = {HIGH, HIGH, HIGH};
 int screenState = HIGH;
@@ -109,7 +110,7 @@ HM330XErrorCode parse_result(uint8_t* data) {
     sprintf(buf, "Used space: %ld KB", usedBytes / 1024);
     tft.drawString(buf,0,start);
     start += 30;
-    written += sprintf(filebuf + written, "%ld", millis());
+    written += sprintf(filebuf + written, "%ld", last_sensor_reading);
     for (int i = 2; i < 5; i++) {
         value = (uint16_t) data[i * 2] << 8 | data[i * 2 + 1];
         sprintf(buf, "%s: %u ug/m3", str[i - 1], value);
@@ -213,20 +214,21 @@ void loop() {
     for(int i=0; i < 3; i++) {
         lastButtonState[i] = digitalRead(buttonIndex[i]);
     }
-
-    if(millis() - start_time < 30000 && millis() - last_sensor_reading > 1000) {
-        char buf[100];
-        sprintf(buf, "Warmup %ld ..   ", 30 - (millis() - start_time) / 1000);
-        tft.drawString(buf,0,80);
-        last_sensor_reading = millis();
+    if(millis() - start_time < 30000) {
+        if(millis() - last_display > 1000) {
+            char buf[100];
+            sprintf(buf, "Warmup %ld ..   ", 30 - (millis() - start_time) / 1000);
+            tft.drawString(buf,0,80);
+            last_display = millis();
+        }
     } else if(millis() - last_sensor_reading > 5000) {
         if (sensor.read_sensor_value(buf, 29)) {
             SERIAL_OUTPUT.println("HM330X read result failed!!!");
         } else {
+            last_sensor_reading = millis();
             parse_result_value(buf);
             parse_result(buf);
         }
-        last_sensor_reading = millis();
     }
     delay(125);
 }
