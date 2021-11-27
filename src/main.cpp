@@ -1,29 +1,17 @@
+#include <Wire.h>
 // display headers:
 #include"TFT_eSPI.h"
 #include"Free_Fonts.h" //include the header file
 // Sensor comm header:
 #include <Seeed_HM330X.h>
-#include "UNIT_ENV.h"
-#include "Adafruit_Sensor.h"
-#include <Adafruit_BMP280.h>
 // Storage headers:
-#include <Seeed_FS.h>
 #include <WiFiClientSecure.h>
 #include "wifi_credentials.h"
 #include <PubSubClient.h>
 
 
-
-// Use SD card instead of internal SPI flash mem (2mb only)
-#undef USESPIFLASH
-
-#ifdef USESPIFLASH
-#define DEV SPIFLASH
-#include "SFUD/Seeed_SFUD.h"
-#else
-#define DEV SD
-#include "SD/Seeed_SD.h"
-#endif
+// SHT30 I2C address is 0x44(68)
+#define SHT30Addr 0x44
 
 TFT_eSPI tft;
 
@@ -40,13 +28,11 @@ const char* logFilePath = "data.csv"; //log path on file system
 #endif
 
 HM330X sensor;
-SHT3X sht30;
 uint8_t buf[30];
 
 char temperature[10];
 char humidity[10];
 char pressure[10];
-Adafruit_BMP280 bme;
 
 unsigned long start_time = 0;
 unsigned long last_mqtt_send = 0;
@@ -56,46 +42,6 @@ unsigned long last_display = 0;
 unsigned long buttonIndex[] = {WIO_KEY_A, WIO_KEY_B, WIO_KEY_C};
 int lastButtonState[] = {HIGH, HIGH, HIGH};
 int screenState = HIGH;
-
-boolean writeFile(fs::FS& fs, const char* path, const char* message) {
-    boolean success = true;
-    SERIAL_OUTPUT.print("Writing file: ");
-    SERIAL_OUTPUT.println(path);
-    File file = fs.open(path, FILE_WRITE);
-    if (!file) {
-        SERIAL_OUTPUT.println("Failed to open file for writing");
-        return false;
-    }
-    
-    if (file.print(message)) {
-        SERIAL_OUTPUT.println("File written");
-    } else {
-        SERIAL_OUTPUT.println("Write failed");
-        success = false;
-    }
-
-    file.close();
-    return success;
-}
-
-boolean appendFile(fs::FS& fs, const char* path, const char* message) {
-    boolean success = true;
-    char buf[100];
-    sprintf(buf, "Appending \"%s\" to file: %s", message, path);
-    SERIAL_OUTPUT.println(buf);
-
-    File file = fs.open(path, FILE_APPEND);
-    if (!file) {
-        SERIAL_OUTPUT.println("Failed to open file for appending");
-        return false;
-    }
-    if (!file.print(message)) {
-        SERIAL_OUTPUT.println("Append failed");
-        success = false;
-    }
-    file.close();
-    return success;
-}
 
 const char* titles[] = {"sensor num: ", "PM1.0",
                      "PM2.5",
@@ -133,26 +79,52 @@ void reconnect()
 }
 
 
+void readSHT30() {
+  unsigned int data[6];
+  
+  // Start I2C Transmission
+  Wire.beginTransmission(SHT30Addr);
+  // Send measurement command
+  Wire.write(0x2C);
+  Wire.write(0x06);
+  // Stop I2C transmission
+  Wire.endTransmission();
+  delay(500);
+
+  // Request 6 bytes of data
+  Wire.requestFrom(SHT30Addr, 6);
+
+  // Read 6 bytes of data
+  // cTemp msb, cTemp lsb, cTemp crc, humidity msb, humidity lsb, humidity crc
+  if (Wire.available() == 6)
+  {
+    data[0] = Wire.read();
+    data[1] = Wire.read();
+    data[2] = Wire.read();
+    data[3] = Wire.read();
+    data[4] = Wire.read();
+    data[5] = Wire.read();
+  }
+
+  // Convert the data
+  float ftemperature = ((((data[0] * 256.0) + data[1]) * 175) / 65535.0) - 45;
+  float fhumidity = ((((data[3] * 256.0) + data[4]) * 100) / 65535.0);
+  sprintf(temperature, "%.2f", ftemperature); //Store the temperature obtained from shT30.
+  sprintf(humidity, "%.1f", fhumidity); //Store the humidity obtained from the SHT30.
+}
+
 /*parse buf with 29 uint8_t-data*/
 HM330XErrorCode parse_result(uint8_t* data) {
     uint16_t value = 0;
     if (NULL == data) {
         return ERROR_PARAM;
     }
+    readSHT30();
     tft.fillScreen(TFT_BLACK); //Black background   
     
    
     char buf[100];
-    char filebuf[100];
-    memset(filebuf, 0, sizeof(filebuf));
-    int written = 0;
     int start  = 0;
-    // display available size
-    uint32_t usedBytes = DEV.usedBytes();
-    sprintf(buf, "Used space: %ld KB", usedBytes / 1024);
-    tft.drawString(buf,0,start);
-    start += 30;
-    written += sprintf(filebuf + written, "%ld", last_sensor_reading);
     char pm1[20], pm2[20], pm10[20];
     for (int i = 2; i < 5; i++) {
         value = (uint16_t) data[i * 2] << 8 | data[i * 2 + 1];
@@ -165,19 +137,16 @@ HM330XErrorCode parse_result(uint8_t* data) {
         }
         sprintf(buf, "%s: %u ug/m3", titles[i - 1], value);
         tft.drawString(buf,0,start);
-        written += sprintf(filebuf + written, ",%u", value);
         start += 30;
     }
-    written += sprintf(filebuf + written, "\n");
     // temperature, pressure, humidity
-    sprintf(pressure, "%.2f", bme.readPressure());
-    sht30.get();  //Obtain the data of shT30.
-    sprintf(temperature, "%.2f", sht30.cTemp); //Store the temperature obtained from shT30.
-    sprintf(humidity, "%.1f", sht30.humidity); //Store the humidity obtained from the SHT30.
-    appendFile(DEV, logFilePath, filebuf);    
-    // m5mqtt.publish(str('QRTone/feeds/temperature'),str(("%.1f"%(temp))))
-    // m5mqtt.publish(str('QRTone/feeds/pressure'),str(("%.1f"%(baro))))
-    // m5mqtt.publish(str('QRTone/feeds/humidity'),str(int(hum)))
+
+    tft.drawString(pressure,0,start);
+    start += 30;
+    tft.drawString(temperature,0,start);
+    start += 30;
+    tft.drawString(humidity,0,start);
+    start += 30;
     
     if(millis() - last_mqtt_send > mqtt_interval_seconds * 1000L) {
         last_mqtt_send = millis();
@@ -211,21 +180,14 @@ HM330XErrorCode parse_result_value(uint8_t* data) {
     return NO_ERROR;
 }
 
-void writeHeader(File& logFile) {
-    logFile.write("time");
-    for (int i = 2; i < 5; i++) {
-      logFile.write(",");
-      logFile.write(titles[i - 1]);
-    }
-    logFile.write("\n");
-    logFile.flush();
-}
 
-/*30s*/
 void setup() {
     SERIAL_OUTPUT.begin(115200);
 
     delay(100);
+    
+    // Initialise I2C communication as MASTER
+    Wire.begin();
 
     // Init buttons
     pinMode(WIO_KEY_A, INPUT_PULLUP);
@@ -235,33 +197,7 @@ void setup() {
     tft.begin();  
     tft.setRotation(3);      
     tft.setFreeFont(FF10); //select Free, Mono, Oblique, 12pt.  
-    tft.fillScreen(TFT_BLACK); //Black background   
-    // init storage
-    SERIAL_OUTPUT.print("Initializing SD card...");
-
-    #ifdef SFUD_USING_QSPI
-        if (!DEV.begin(104000000UL)) {
-            SERIAL_OUTPUT.println("Card Mount Failed");
-            while (1);
-        }
-    #else
-        if (!DEV.begin(SDCARD_SS_PIN,SDCARD_SPI,4000000UL)) {
-            SERIAL_OUTPUT.println("Card Mount Failed");
-            while (1);
-        }
-    #endif 
-
-    Serial.println("initialization done.");
-    // check if file exists
-    if(!DEV.exists(logFilePath)) {
-      File logFile = DEV.open("data.csv", FILE_WRITE); //Writing Mode
-      if (!logFile) {
-          SERIAL_OUTPUT.println("Failed to open file for writing");
-          while (1);
-      }
-      writeHeader(logFile);    
-    }
-
+    tft.fillScreen(TFT_BLACK); //Black background  
 
     WiFi.mode(WIFI_STA); //set WiFi to station mode 
     WiFi.disconnect(); //disconnect from an AP if it was previously connected
