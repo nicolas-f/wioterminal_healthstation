@@ -158,7 +158,7 @@ HM330XErrorCode parse_result(uint8_t* data) {
         client.publish("QRTone/feeds/pm2",pm2);
         client.publish("QRTone/feeds/pm10",pm10);
         client.publish("QRTone/feeds/temperature",temperature);
-        client.publish("QRTone/feeds/pressure",pressure);
+        // client.publish("QRTone/feeds/pressure",pressure);
         client.publish("QRTone/feeds/humidity",humidity);
         SERIAL_OUTPUT.println("MQTT sent");
     }
