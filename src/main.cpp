@@ -5,6 +5,11 @@
 #include <Seeed_HM330X.h>
 // Storage headers:
 #include <Seeed_FS.h>
+#include <WiFiClientSecure.h>
+#include "wifi_credentials.h"
+#include <PubSubClient.h>
+
+
 
 // Use SD card instead of internal SPI flash mem (2mb only)
 #undef USESPIFLASH
@@ -19,6 +24,10 @@
 
 TFT_eSPI tft;
 
+// Use WiFiClient class to create TCP connections
+WiFiClientSecure wifiClient;
+PubSubClient client(wifiClient);
+
 const char* logFilePath = "data.csv"; //log path on file system
 
 #ifdef  ARDUINO_SAMD_VARIANT_COMPLIANCE
@@ -31,6 +40,8 @@ HM330X sensor;
 uint8_t buf[30];
 
 unsigned long start_time = 0;
+unsigned long last_mqtt_send = 0;
+unsigned long mqtt_interval_seconds = 60;
 unsigned long last_sensor_reading = 0;
 unsigned long last_display = 0;
 unsigned long buttonIndex[] = {WIO_KEY_A, WIO_KEY_B, WIO_KEY_C};
@@ -77,7 +88,7 @@ boolean appendFile(fs::FS& fs, const char* path, const char* message) {
     return success;
 }
 
-const char* str[] = {"sensor num: ", "PM1.0",
+const char* titles[] = {"sensor num: ", "PM1.0",
                      "PM2.5",
                      "PM10"
                     };
@@ -90,6 +101,27 @@ HM330XErrorCode print_result(const char* str, uint16_t value) {
     SERIAL_OUTPUT.println(value);
     return NO_ERROR;
 }
+
+void reconnect()
+{
+  // Loop until we're reconnected
+  while (!client.connected())
+  {
+    Serial.print("Attempting MQTT connection...");
+    // Attempt to connect
+    if (client.connect("stickc", IO_USERNAME, IO_KEY))
+    {
+      Serial.println("connected");
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again in 5 seconds");
+      // Wait 5 seconds before retrying
+      delay(5000);
+    }
+  }
+}
+
 
 /*parse buf with 29 uint8_t-data*/
 HM330XErrorCode parse_result(uint8_t* data) {
@@ -111,15 +143,39 @@ HM330XErrorCode parse_result(uint8_t* data) {
     tft.drawString(buf,0,start);
     start += 30;
     written += sprintf(filebuf + written, "%ld", last_sensor_reading);
+    char pm1[20], pm2[20], pm10[20];
     for (int i = 2; i < 5; i++) {
         value = (uint16_t) data[i * 2] << 8 | data[i * 2 + 1];
-        sprintf(buf, "%s: %u ug/m3", str[i - 1], value);
+        if(i==2) {
+            sprintf(pm1, "%d", value);
+        } else if(i==3) {
+            sprintf(pm2, "%d", value);
+        } else {
+            sprintf(pm10, "%d", value);
+        }
+        sprintf(buf, "%s: %u ug/m3", titles[i - 1], value);
         tft.drawString(buf,0,start);
         written += sprintf(filebuf + written, ",%u", value);
         start += 30;
     }
     written += sprintf(filebuf + written, "\n");
     appendFile(DEV, logFilePath, filebuf);
+    
+    // m5mqtt.publish(str('QRTone/feeds/temperature'),str(("%.1f"%(temp))))
+    // m5mqtt.publish(str('QRTone/feeds/pressure'),str(("%.1f"%(baro))))
+    // m5mqtt.publish(str('QRTone/feeds/humidity'),str(int(hum)))
+    
+    if(millis() - last_mqtt_send > mqtt_interval_seconds * 1000L) {
+        last_mqtt_send = millis();
+        if (!client.connected())
+        {
+           reconnect();
+        }
+        client.publish("QRTone/feeds/pm1",pm1);
+        client.publish("QRTone/feeds/pm2",pm2);
+        client.publish("QRTone/feeds/pm10",pm10);
+        SERIAL_OUTPUT.println("MQTT sent");
+    }
     return NO_ERROR;
 }
 
@@ -142,7 +198,7 @@ void writeHeader(File& logFile) {
     logFile.write("time");
     for (int i = 2; i < 5; i++) {
       logFile.write(",");
-      logFile.write(str[i - 1]);
+      logFile.write(titles[i - 1]);
     }
     logFile.write("\n");
     logFile.flush();
@@ -150,6 +206,10 @@ void writeHeader(File& logFile) {
 
 /*30s*/
 void setup() {
+    SERIAL_OUTPUT.begin(115200);
+
+    delay(100);
+
     // Init buttons
     pinMode(WIO_KEY_A, INPUT_PULLUP);
     pinMode(WIO_KEY_B, INPUT_PULLUP);
@@ -186,10 +246,38 @@ void setup() {
     }
 
 
+    WiFi.mode(WIFI_STA); //set WiFi to station mode 
+    WiFi.disconnect(); //disconnect from an AP if it was previously connected
+        
+    tft.fillScreen(TFT_BLACK);
+    tft.setCursor((320 - tft.textWidth("Connecting to WiFi..")) / 2, 120);
+    tft.print("Connecting to WiFi..");
 
-    SERIAL_OUTPUT.begin(115200);
-    delay(100);
-    SERIAL_OUTPUT.println("Serial start");
+    WiFi.begin(ssid, password); //connect to Wi-Fi network
+    
+    // attempt to connect to Wi-Fi network:
+    while (WiFi.status() != WL_CONNECTED) {
+        Serial.print(".");
+        // wait 1 second for re-trying
+        delay(1000);
+    }
+        
+    Serial.print("Connected to ");
+    Serial.println(ssid); //print Wi-Fi name 
+    Serial.print("IP Address: ");
+    Serial.println(WiFi.localIP()); //print Wio Terminal's IP address
+    Serial.println(""); //print empty line
+
+    tft.fillScreen(TFT_BLACK);
+    tft.setCursor((320 - tft.textWidth("Connected!")) / 2, 120);
+    tft.print("Connected!");
+
+    wifiClient.setCACert(test_root_ca);
+
+    client.setServer(IO_SERVER, 8883);
+
+    delay(500);
+
     if (sensor.init()) {
         SERIAL_OUTPUT.println("HM330X init failed!!!");
         while (1);
