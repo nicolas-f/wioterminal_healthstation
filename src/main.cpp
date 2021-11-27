@@ -3,6 +3,9 @@
 #include"Free_Fonts.h" //include the header file
 // Sensor comm header:
 #include <Seeed_HM330X.h>
+#include "UNIT_ENV.h"
+#include "Adafruit_Sensor.h"
+#include <Adafruit_BMP280.h>
 // Storage headers:
 #include <Seeed_FS.h>
 #include <WiFiClientSecure.h>
@@ -37,7 +40,13 @@ const char* logFilePath = "data.csv"; //log path on file system
 #endif
 
 HM330X sensor;
+SHT3X sht30;
 uint8_t buf[30];
+
+char temperature[10];
+char humidity[10];
+char pressure[10];
+Adafruit_BMP280 bme;
 
 unsigned long start_time = 0;
 unsigned long last_mqtt_send = 0;
@@ -112,6 +121,7 @@ void reconnect()
     if (client.connect("stickc", IO_USERNAME, IO_KEY))
     {
       Serial.println("connected");
+      delay(1000);
     } else {
       Serial.print("failed, rc=");
       Serial.print(client.state());
@@ -159,8 +169,12 @@ HM330XErrorCode parse_result(uint8_t* data) {
         start += 30;
     }
     written += sprintf(filebuf + written, "\n");
-    appendFile(DEV, logFilePath, filebuf);
-    
+    // temperature, pressure, humidity
+    sprintf(pressure, "%.2f", bme.readPressure());
+    sht30.get();  //Obtain the data of shT30.
+    sprintf(temperature, "%.2f", sht30.cTemp); //Store the temperature obtained from shT30.
+    sprintf(humidity, "%.1f", sht30.humidity); //Store the humidity obtained from the SHT30.
+    appendFile(DEV, logFilePath, filebuf);    
     // m5mqtt.publish(str('QRTone/feeds/temperature'),str(("%.1f"%(temp))))
     // m5mqtt.publish(str('QRTone/feeds/pressure'),str(("%.1f"%(baro))))
     // m5mqtt.publish(str('QRTone/feeds/humidity'),str(int(hum)))
@@ -174,6 +188,9 @@ HM330XErrorCode parse_result(uint8_t* data) {
         client.publish("QRTone/feeds/pm1",pm1);
         client.publish("QRTone/feeds/pm2",pm2);
         client.publish("QRTone/feeds/pm10",pm10);
+        client.publish("QRTone/feeds/temperature",temperature);
+        client.publish("QRTone/feeds/pressure",pressure);
+        client.publish("QRTone/feeds/humidity",humidity);
         SERIAL_OUTPUT.println("MQTT sent");
     }
     return NO_ERROR;
